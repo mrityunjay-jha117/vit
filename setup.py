@@ -4,14 +4,16 @@ setup(
     name="vit",
     version="0.1.0",
     description="Git for Video Editing — version control timeline metadata, not media files",
-    packages=find_packages(),
+    packages=find_packages(exclude=["tests", "tests.*", "demo", "demo.*"]),
     python_requires=">=3.8",
     install_requires=[
         "google-generativeai",
         "rich",
-        "PySide6",
     ],
-    extras_require={},
+    extras_require={
+        # Optional Qt panel inside Resolve; without it the Tkinter panel is used.
+        "qt": ["PySide6"],
+    },
     entry_points={
         "console_scripts": [
             "vit=vit.cli:main",

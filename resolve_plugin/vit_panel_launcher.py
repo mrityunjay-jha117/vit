@@ -215,10 +215,9 @@ def handle_request(request, resolve_app, project_dir):
 
         elif action == "merge":
             from vit.core import (
-                git_add, git_commit, git_merge, git_is_clean,
-                git_current_branch, git_list_conflicted_files,
-                git_checkout_theirs, GitError,
+                git_add, git_commit, git_is_clean, git_current_branch, GitError,
             )
+            from vit.merge_utils import format_conflicts, perform_merge
             from vit.serializer import serialize_timeline
             from vit.deserializer import deserialize_timeline
             from vit.validator import validate_project, format_issues
@@ -239,30 +238,27 @@ def handle_request(request, resolve_app, project_dir):
                     if "nothing to commit" not in str(e):
                         return {"ok": False, "error": str(e)}
 
-            success, output = git_merge(project_dir, target)
-            if not success:
-                conflicted = git_list_conflicted_files(project_dir)
-                auto_resolvable = [f for f in conflicted if f.endswith(".drx") or f.startswith("timeline/")]
-                non_resolvable = [f for f in conflicted if f not in auto_resolvable]
-                if auto_resolvable and not non_resolvable:
-                    try:
-                        git_checkout_theirs(project_dir, auto_resolvable)
-                        git_add(project_dir, auto_resolvable)
-                        git_commit(project_dir, f"vit: merged '{target}' (auto-resolved)")
-                        success = True
-                    except GitError as e:
-                        return {"ok": False, "error": f"Auto-resolve failed: {e}"}
+            # Clip-level merge: edits from both branches to the same JSON file
+            # are combined. If both changed the same property, nothing is
+            # touched and the user decides in the terminal.
+            outcome = perform_merge(project_dir, target)
+            if outcome.status == "up_to_date":
+                return {"ok": True, "branch": target, "current": current,
+                        "issues": f"'{current}' already contains everything from '{target}'."}
+            if outcome.status == "conflicts":
+                return {"ok": False, "error": (
+                    "Both branches changed the same thing — nothing was merged:\n"
+                    + format_conflicts(outcome.conflicts, current, target)
+                    + f"\n\nRun 'vit merge {target}' in a terminal to choose which version wins."
+                )}
 
-            if success:
-                issues = validate_project(project_dir)
-                project = resolve_app.GetProjectManager().GetCurrentProject()
-                timeline = project.GetCurrentTimeline()
-                if timeline:
-                    deserialize_timeline(timeline, project, project_dir, resolve_app=resolve_app)
-                issue_text = format_issues(issues) if issues else ""
-                return {"ok": True, "branch": target, "current": current, "issues": issue_text}
-            else:
-                return {"ok": False, "error": f"Merge conflicts. Use terminal: vit merge {target}"}
+            issues = validate_project(project_dir)
+            project = resolve_app.GetProjectManager().GetCurrentProject()
+            timeline = project.GetCurrentTimeline()
+            if timeline:
+                deserialize_timeline(timeline, project, project_dir, resolve_app=resolve_app)
+            issue_text = format_issues(issues) if issues else ""
+            return {"ok": True, "branch": target, "current": current, "issues": issue_text}
 
         elif action == "push":
             from vit.core import git_current_branch, git_push, GitError
@@ -456,11 +452,18 @@ def run_server(resolve_app, project_dir):
                 pkg_root = f.read().strip()
             qt_script = os.path.join(pkg_root, "resolve_plugin", "vit_panel_qt.py")
 
+    # Shared secret so only our Qt child can drive this socket — any local
+    # process could otherwise connect first and issue merge/push commands.
+    import secrets
+    token = secrets.token_hex(16)
+    child_env = dict(os.environ, VIT_PANEL_TOKEN=token)
+
     _log(f"Spawning Qt panel: {python} {qt_script}")
     proc = subprocess.Popen(
         [python, qt_script, "--project-dir", project_dir, "--port", str(port)],
         stdout=None,
         stderr=None,
+        env=child_env,
     )
 
     conn = None
@@ -490,6 +493,11 @@ def run_server(resolve_app, project_dir):
                 except json.JSONDecodeError as e:
                     _log(f"Bad JSON: {e}")
                     continue
+
+                if not secrets.compare_digest(str(request.pop("token", "")), token):
+                    _log("Rejected request with a missing/invalid token; closing connection.")
+                    should_quit = True
+                    break
 
                 response = handle_request(request, resolve_app, project_dir)
                 conn.sendall((json.dumps(response) + "\n").encode("utf-8"))

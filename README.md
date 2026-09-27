@@ -36,14 +36,14 @@ curl -fsSL https://raw.githubusercontent.com/LucasHJin/vit/main/install.sh | bas
 ```bash
 git clone https://github.com/LucasHJin/vit.git
 cd vit
-pip install .
+pip install -e .      # editable: the Resolve scripts load vit from this checkout
 vit install-resolve   # symlink plugin scripts into DaVinci Resolve
 ```
 
-For the optional Qt-based GUI panel inside Resolve:
+For the optional Qt-based GUI panel inside Resolve (otherwise a Tkinter panel is used):
 
 ```bash
-pip install ".[qt]"
+pip install -e ".[qt]"
 ```
 
 ## Usage Guide (GUI — Primary Workflow)

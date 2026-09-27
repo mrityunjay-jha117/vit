@@ -33,9 +33,9 @@ def main():
         show_error, show_message, _log,
     )
     from vit.core import (
-        git_add, git_checkout_theirs, git_commit, git_current_branch,
+        git_add, git_commit, git_current_branch,
         git_is_clean, git_list_branches, git_list_conflicted_files,
-        git_merge, git_show_file, GitError,
+        git_merge, git_merge_abort, git_merge_base, git_rev_parse, GitError,
     )
     from vit.deserializer import (
         capture_restore_state,
@@ -45,23 +45,18 @@ def main():
     )
     from vit.merge_utils import (
         domain_file_map,
+        format_conflicts,
+        sidecar_side,
+        load_domain_files,
         merge_timeline_domains_for_overlays,
         referenced_sidecars,
+        three_way_merge_domains,
     )
     from vit.validator import validate_project, format_issues
 
     def _load_domain_files_at_ref(ref_name):
-        files = {}
-        for domain, relpath in domain_file_map().items():
-            raw = git_show_file(project_dir, ref_name, relpath)
-            if raw:
-                try:
-                    files[domain] = json.loads(raw)
-                except json.JSONDecodeError:
-                    files[domain] = {}
-            else:
-                files[domain] = {}
-        return files
+        files = load_domain_files(project_dir, ref_name)
+        return {domain: files.get(domain, {}) for domain in domain_file_map()}
 
     def _write_binary_from_ref(ref_name, relpath, dest_relpath):
         result = subprocess.run(
@@ -238,8 +233,18 @@ def main():
             )
             try:
                 theirs_files = _load_domain_files_at_ref(branch)
+                base_ref = git_merge_base(project_dir, "HEAD", branch)
+                base_files = _load_domain_files_at_ref(base_ref) if base_ref else {}
+                structural, conflicts = three_way_merge_domains(
+                    base_files, pre_merge_state["domains"], theirs_files,
+                )
+                if conflicts:
+                    raise GitError(
+                        "Both branches changed the same thing:\n"
+                        + format_conflicts(conflicts, current, branch)
+                    )
                 merged_files, merge_plan = merge_timeline_domains_for_overlays(
-                    theirs_files,
+                    structural,
                     pre_merge_state["domains"],
                     theirs_files,
                 )
@@ -249,44 +254,43 @@ def main():
                 )
 
                 for path in auto_resolvable:
-                    if path.endswith(".comp"):
-                        if path in referenced_generators:
-                            if _write_binary_from_ref(branch, path, path):
-                                staged_paths.add(path)
-                                continue
-                            git_checkout_theirs(project_dir, [path])
-                        else:
-                            subprocess.run(
-                                ["git", "rm", "-f", path],
-                                cwd=project_dir,
-                                capture_output=True,
-                                check=False,
-                            )
-                    elif path.endswith(".drx"):
-                        if path in referenced_grades:
-                            filename = path.rsplit("/", 1)[-1]
-                            if filename in merge_plan.grade_restore_ours:
-                                _write_binary_from_ref("HEAD", path, path)
-                            else:
-                                _write_binary_from_ref(branch, path, path)
-                            staged_paths.add(path)
-                        else:
-                            subprocess.run(
-                                ["git", "rm", "-f", path],
-                                cwd=project_dir,
-                                capture_output=True,
-                                check=False,
-                            )
-                    elif path.endswith(".json"):
+                    if path.endswith(".json"):
                         staged_paths.add(path)
+                        continue
+                    if not path.endswith((".comp", ".drx", ".cube")):
+                        raise GitError(f"Don't know how to merge {path}")
+                    if path not in referenced_generators and path not in referenced_grades:
+                        subprocess.run(
+                            ["git", "rm", "-f", path],
+                            cwd=project_dir,
+                            capture_output=True,
+                            check=False,
+                        )
+                        continue
+                    # Take the sidecar from the side whose grade/title the
+                    # merged JSON kept, so the binary matches the metadata.
+                    filename = path.rsplit("/", 1)[-1]
+                    if filename in merge_plan.grade_restore_ours:
+                        source = "HEAD"
+                    elif sidecar_side(path, merged_files, theirs_files) == "theirs":
+                        source = branch
+                    else:
+                        source = "HEAD"
+                    if not _write_binary_from_ref(source, path, path):
+                        raise GitError(f"Could not restore {path} from {source}")
+                    staged_paths.add(path)
 
                 git_add(project_dir, sorted(staged_paths))
+                remaining = git_list_conflicted_files(project_dir)
+                if remaining:
+                    raise GitError(f"Unresolved conflicts: {', '.join(remaining)}")
                 git_commit(project_dir,
                            f"vit: merged '{branch}' into '{current}' (auto-resolved)")
                 success = True
                 output = "Auto-resolved timeline conflicts with overlay-aware merge."
-            except GitError as e:
+            except (GitError, ValueError) as e:
                 _log(f"Auto-resolve failed: {e}")
+                output = str(e)
 
     if success:
         normalized_overlay = False
@@ -320,10 +324,12 @@ def main():
 
         show_message("Vit", msg)
     else:
+        if git_rev_parse(project_dir, "MERGE_HEAD"):
+            git_merge_abort(project_dir)
         show_error(
             "Vit",
-            f"Merge has conflicts.\n\n{output}\n\n"
-            f"Use 'vit merge {branch}' from terminal for AI-assisted resolution.",
+            f"Merge was not applied — nothing changed.\n\n{output}\n\n"
+            f"Run 'vit merge {branch}' in a terminal to choose which version wins.",
         )
 
 

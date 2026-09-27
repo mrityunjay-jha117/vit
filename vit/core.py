@@ -67,6 +67,12 @@ def git_init(project_dir: str) -> None:
     """Initialize a new git repo and create .vit/ config."""
     os.makedirs(project_dir, exist_ok=True)
     _run(["init"], cwd=project_dir)
+    # Start new repos on 'main', whatever the user's init.defaultBranch is —
+    # docs, clone instructions and the panel all assume it. Never move HEAD
+    # in a repo that already has history (that would orphan existing work).
+    has_commits = _run(["rev-parse", "--verify", "--quiet", "HEAD"], cwd=project_dir, check=False)
+    if has_commits.returncode != 0:
+        _run(["symbolic-ref", "HEAD", "refs/heads/main"], cwd=project_dir)
 
     # Create .vit config directory
     vit_dir = os.path.join(project_dir, ".vit")
@@ -119,9 +125,14 @@ def git_checkout(project_dir: str, ref: str) -> None:
     _run(["checkout", ref], cwd=project_dir)
 
 
-def git_merge(project_dir: str, branch: str) -> Tuple[bool, str]:
-    """Attempt to merge a branch. Returns (success, output)."""
-    result = _run(["merge", branch], cwd=project_dir, check=False)
+def git_merge(project_dir: str, branch: str, no_commit: bool = False) -> Tuple[bool, str]:
+    """Attempt to merge a branch. Returns (success, output).
+
+    With no_commit, always stops before committing (even for fast-forwards)
+    so the caller can write resolved files and commit the merge itself.
+    """
+    args = ["merge", "--no-ff", "--no-commit", branch] if no_commit else ["merge", branch]
+    result = _run(args, cwd=project_dir, check=False)
     success = result.returncode == 0
     output = result.stdout + result.stderr
     return success, output
@@ -132,11 +143,13 @@ def git_merge_abort(project_dir: str) -> None:
     _run(["merge", "--abort"], cwd=project_dir)
 
 
-def git_diff(project_dir: str, ref: Optional[str] = None) -> str:
-    """Get diff output. If ref is given, diff against it."""
+def git_diff(project_dir: str, ref: Optional[str] = None, paths: Optional[List[str]] = None) -> str:
+    """Get diff output. If ref is given, diff against it; paths limits the files."""
     args = ["diff"]
     if ref:
         args.append(ref)
+    if paths:
+        args += ["--"] + paths
     result = _run(args, cwd=project_dir)
     return result.stdout
 
@@ -218,6 +231,35 @@ def git_merge_base(project_dir: str, ref1: str, ref2: str) -> Optional[str]:
     return result.stdout.strip()
 
 
+def git_rev_parse(project_dir: str, ref: str) -> Optional[str]:
+    """Resolve a ref to its full commit hash, or None if it doesn't exist."""
+    result = _run(["rev-parse", "--verify", "--quiet", f"{ref}^{{commit}}"], cwd=project_dir, check=False)
+    if result.returncode != 0:
+        return None
+    return result.stdout.strip()
+
+
+def git_merge_tree_conflicts(project_dir: str, ours: str, theirs: str) -> Optional[List[str]]:
+    """Files a plain line-based git merge of the two refs would conflict on.
+
+    Uses `git merge-tree --write-tree`, which touches neither the index nor
+    the working tree. Returns None when git is too old to support it (< 2.38);
+    this is diagnostic information only, so merges must not depend on it.
+    """
+    result = _run(
+        ["merge-tree", "--write-tree", "--name-only", "--no-messages", ours, theirs],
+        cwd=project_dir,
+        check=False,
+    )
+    if result.returncode == 0:
+        return []
+    if result.returncode != 1:
+        return None
+    # First line is the tree id; the rest are conflicted paths.
+    paths = [line for line in result.stdout.splitlines()[1:] if line.strip()]
+    return list(dict.fromkeys(paths))
+
+
 def git_list_conflicted_files(project_dir: str) -> List[str]:
     """List files with merge conflicts."""
     result = _run(["diff", "--name-only", "--diff-filter=U"], cwd=project_dir, check=False)
@@ -227,6 +269,16 @@ def git_list_conflicted_files(project_dir: str) -> List[str]:
 def git_checkout_theirs(project_dir: str, paths: List[str]) -> None:
     """Resolve conflicts by taking the incoming branch's version."""
     _run(["checkout", "--theirs"] + paths, cwd=project_dir)
+
+
+def git_rm(project_dir: str, paths: List[str]) -> None:
+    """Remove files from the index and working tree."""
+    _run(["rm", "-f", "--"] + paths, cwd=project_dir)
+
+
+def git_checkout_ours(project_dir: str, paths: List[str]) -> None:
+    """Resolve conflicts by keeping the current branch's version."""
+    _run(["checkout", "--ours"] + paths, cwd=project_dir)
 
 
 def git_is_clean(project_dir: str) -> bool:
@@ -407,7 +459,7 @@ def categorize_commit(files_changed: List[str]) -> str:
 def git_log_graph(project_dir: str, max_count: int = 200) -> List[dict]:
     """All commits across branches in topological order, newest first.
 
-    Returns list of dicts with: hash, parents, message, author, date, refs.
+    Returns list of dicts with: hash, parents, message, author, date, refs, is_head.
     """
     result = _run(
         [
@@ -426,8 +478,12 @@ def git_log_graph(project_dir: str, max_count: int = 200) -> List[dict]:
         if len(parts) < 6:
             continue
         refs = []
+        is_head = False
         for ref in parts[5].split(","):
-            ref = ref.strip().replace("HEAD -> ", "")
+            ref = ref.strip()
+            if ref == "HEAD" or ref.startswith("HEAD -> "):
+                is_head = True
+            ref = ref.replace("HEAD -> ", "")
             if ref and ref != "HEAD":
                 refs.append(ref)
         commits.append({
@@ -437,6 +493,7 @@ def git_log_graph(project_dir: str, max_count: int = 200) -> List[dict]:
             "author": parts[3],
             "date": parts[4],
             "refs": refs,
+            "is_head": is_head,
         })
     return commits
 

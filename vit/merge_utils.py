@@ -3,8 +3,10 @@
 from __future__ import annotations
 
 import copy
+import json
+import os
 from dataclasses import dataclass, field
-from typing import Dict, Tuple
+from typing import Dict, List, Optional, Tuple
 
 
 @dataclass
@@ -432,3 +434,157 @@ def domain_file_map() -> Dict[str, str]:
         "metadata": "timeline/metadata.json",
         "manifest": "assets/manifest.json",
     }
+
+
+# ── Merge orchestration (shared by the CLI, the Resolve panels and the demo) ──
+
+@dataclass
+class MergeOutcome:
+    """Result of perform_merge.
+
+    status is "merged", "conflicts" (nothing was changed — ask the user and call
+    again with resolutions) or "up_to_date".
+    """
+
+    status: str
+    conflicts: list = field(default_factory=list)
+    commit: str = ""
+    git_text_conflicts: List[str] = field(default_factory=list)
+    base_files: Dict[str, dict] = field(default_factory=dict)
+    ours_files: Dict[str, dict] = field(default_factory=dict)
+    theirs_files: Dict[str, dict] = field(default_factory=dict)
+    merged_files: Dict[str, dict] = field(default_factory=dict)
+
+
+def load_domain_files(project_dir: str, ref: Optional[str]) -> Dict[str, dict]:
+    """Domain files at a git ref, keyed by domain. Files absent at ref are omitted."""
+    from .core import git_show_file
+
+    files = {}
+    if not ref:
+        return files
+    for domain, relpath in domain_file_map().items():
+        raw = git_show_file(project_dir, ref, relpath)
+        if raw is None:
+            continue
+        try:
+            files[domain] = json.loads(raw)
+        except json.JSONDecodeError as e:
+            raise ValueError(f"{relpath} at {ref} is not valid JSON: {e}") from e
+    return files
+
+
+def write_domain_files(project_dir: str, files: Dict[str, dict]) -> None:
+    """Write domain files (only the domains present in `files`)."""
+    from .json_writer import _write_json
+
+    paths = domain_file_map()
+    for domain, data in files.items():
+        if domain in paths:
+            _write_json(os.path.join(project_dir, paths[domain]), data)
+
+
+def sidecar_side(relpath: str, merged: Dict[str, dict], theirs: Dict[str, dict]) -> str:
+    """Pick the side of a conflicted binary sidecar that matches the merged JSON."""
+    name = relpath.rsplit("/", 1)[-1]
+    their_grades = theirs.get("color", {}).get("grades", {})
+    for clip_id, grade in merged.get("color", {}).get("grades", {}).items():
+        if name in (grade.get("drx_file"), grade.get("lut_file")):
+            return "theirs" if their_grades.get(clip_id) == grade else "ours"
+    their_items = {
+        item.get("id"): item
+        for track in theirs.get("cuts", {}).get("video_tracks", [])
+        for item in track.get("items", [])
+    }
+    for track in merged.get("cuts", {}).get("video_tracks", []):
+        for item in track.get("items", []):
+            if item.get("fusion_comp_file") == name:
+                return "theirs" if their_items.get(item.get("id")) == item else "ours"
+    return "ours"
+
+
+def format_conflicts(conflicts: list, ours_label: str = "ours", theirs_label: str = "theirs") -> str:
+    """Human-readable list of conflicts for terminal or dialog output."""
+    def show(value):
+        return "(deleted)" if value is None else json.dumps(value, sort_keys=True)
+
+    lines = []
+    for c in conflicts:
+        lines.append(f"  {c['path']}")
+        lines.append(f"    {ours_label}: {show(c['ours'])}")
+        lines.append(f"    {theirs_label}: {show(c['theirs'])}")
+    return "\n".join(lines)
+
+
+def perform_merge(
+    project_dir: str,
+    branch: str,
+    resolutions: Optional[Dict[str, str]] = None,
+    message: Optional[str] = None,
+) -> MergeOutcome:
+    """Merge `branch` into the current branch at clip/field granularity.
+
+    git records the merge (a real two-parent commit); the content comes from
+    three_way_merge_domains, so independent edits to the same JSON file combine
+    instead of one side overwriting the other. If the same property changed
+    differently on both sides, returns status "conflicts" without touching the
+    repo — pass the user's choices back as `resolutions`.
+
+    The working tree must be clean (auto-save first).
+    """
+    from .core import (
+        GitError, git_add, git_checkout_ours, git_checkout_theirs, git_commit,
+        git_current_branch, git_list_conflicted_files, git_merge, git_merge_abort,
+        git_merge_base, git_merge_tree_conflicts, git_rev_parse, git_rm,
+    )
+
+    theirs_hash = git_rev_parse(project_dir, branch)
+    if theirs_hash is None:
+        raise GitError(f"Unknown branch '{branch}'")
+    base = git_merge_base(project_dir, "HEAD", branch)
+    if base == theirs_hash:
+        return MergeOutcome(status="up_to_date")
+
+    base_f = load_domain_files(project_dir, base)
+    ours_f = load_domain_files(project_dir, "HEAD")
+    theirs_f = load_domain_files(project_dir, branch)
+    merged, conflicts = three_way_merge_domains(base_f, ours_f, theirs_f, resolutions)
+    outcome = MergeOutcome(
+        status="conflicts", conflicts=conflicts,
+        base_files=base_f, ours_files=ours_f, theirs_files=theirs_f, merged_files=merged,
+    )
+    if conflicts:
+        return outcome
+
+    outcome.git_text_conflicts = git_merge_tree_conflicts(project_dir, "HEAD", branch) or []
+    current = git_current_branch(project_dir)
+    _, output = git_merge(project_dir, branch, no_commit=True)
+    if git_rev_parse(project_dir, "MERGE_HEAD") is None:
+        raise GitError(f"git could not start merging '{branch}': {output.strip()}")
+
+    try:
+        write_domain_files(project_dir, merged)
+        domain_paths = {domain_file_map()[d] for d in merged if d in domain_file_map()}
+        to_stage = set(domain_paths)
+        for relpath in git_list_conflicted_files(project_dir):
+            if relpath in domain_paths:
+                continue
+            if not relpath.startswith("timeline/"):
+                raise GitError(f"Conflict outside the timeline needs manual resolution: {relpath}")
+            side = sidecar_side(relpath, merged, theirs_f)
+            try:
+                (git_checkout_theirs if side == "theirs" else git_checkout_ours)(project_dir, [relpath])
+                to_stage.add(relpath)
+            except GitError:
+                git_rm(project_dir, [relpath])  # that side deleted the sidecar
+        git_add(project_dir, sorted(to_stage))
+        remaining = git_list_conflicted_files(project_dir)
+        if remaining:
+            raise GitError(f"Unresolved conflicts: {', '.join(remaining)}")
+        outcome.commit = git_commit(project_dir, message or f"vit: merge '{branch}' into '{current}'")
+    except Exception:
+        git_merge_abort(project_dir)
+        raise
+
+    outcome.status = "merged"
+    return outcome

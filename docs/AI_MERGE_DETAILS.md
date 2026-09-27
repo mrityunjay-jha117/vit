@@ -14,40 +14,45 @@
 ## Merge Flow
 
 ```
-vit merge <branch>
+vit merge <branch>            (the Resolve panels use the same steps 1–3)
     │
     ▼
-1. Try git merge
+1. Clip-level 3-way merge (merge_utils.perform_merge)
+   - base / ours / theirs loaded from git
+   - clips matched by id, markers by frame, grades by clip id,
+     then merged field by field
     │
-    ├─ Git conflict? ──────────────────────┐
-    │                                       │
-    ▼                                       ▼
-2. Git merge succeeded              3. Extract ours/theirs/base
-    │                                  for conflicting files
-    ▼                                       │
-4. Post-merge validation                    │
-   (validator.py)                           │
-    │                                       │
-    ├─ Valid? → Done ✓                      │
-    │                                       │
-    ├─ Issues found? ──────────────────────►│
-    │                                       │
-    ▼                                       ▼
-5. Send to LLM (ai_merge.py)
-   - All domain JSON files (both versions)
-   - Schema context
-   - List of detected issues
-   - Instructions for semantic resolution
+    ├─ Same property changed differently on both sides?
+    │     → nothing is touched; CLI asks "keep ours / take theirs"
+    │       per conflict (panels point the user to the CLI)
     │
     ▼
-6. LLM returns resolved JSON
+2. git merge --no-ff --no-commit, write merged JSON, pick binary
+   sidecars (.drx/.cube/.comp) from the side the merged JSON kept,
+   commit → a real two-parent merge commit
     │
     ▼
-7. Show user what AI changed, ask for confirmation
+3. Post-merge validation (validator.py)
+    │
+    ├─ Valid? → Done ✓
+    │
+    ├─ Errors (orphaned refs, overlaps, …) and AI enabled?
+    ▼
+4. Send to LLM (ai_merge.merge_with_ai)
+   - base / merged / theirs domain JSON + detected issues
     │
     ▼
-8. Write resolved files, commit
+5. Show user what AI changed, ask for confirmation
+    │
+    ▼
+6. Write resolved files, commit as "AI fix-up after merging …"
 ```
+
+Independent edits — even to the same JSON file — never need the LLM:
+line-based git would conflict when two editors add clips to the same track,
+but the clip-level merge combines them. The LLM only handles *semantic*
+problems that survive a correct merge (e.g. one branch deleted a clip the
+other graded).
 
 ## LLM Prompt Template
 
@@ -84,7 +89,7 @@ Return the resolved JSON for each domain file.
 ## Implementation Notes
 
 - Uses Gemini API via `google-generativeai` Python SDK
-- Called only when git can't merge cleanly OR post-merge validation finds issues
-- For common case (different domains, no cross-references), AI is never invoked
+- Called only when post-merge validation finds errors (never for plain conflicts)
+- For the common case (independent edits), AI is never invoked
 - User always sees what the AI changed before commit
-- Falls back to manual conflict resolution if AI merge declined
+- If the AI fix-up is declined, the merge stays committed and the issues are listed for manual fixing

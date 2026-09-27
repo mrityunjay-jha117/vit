@@ -704,8 +704,8 @@ def _export_grade_stills(timeline, project, project_dir: str,
                 except (AttributeError, TypeError):
                     pass
 
-            except Exception:
-                pass
+            except Exception as e:
+                print(f"  Warning: could not export grade still for '{item_id}': {e}")
 
     if saved_page and resolve_app:
         try:
@@ -786,7 +786,8 @@ def _export_grade_luts(timeline, project_dir: str,
                 else:
                     if lut_export_works is None:
                         lut_export_works = False
-            except Exception:
+            except Exception as e:
+                print(f"  Warning: could not export LUT for '{item_id}': {e}")
                 if lut_export_works is None:
                     lut_export_works = False
 

@@ -108,7 +108,7 @@ These are CLI commands for power users and scripting. Most users access equivale
 | Save version | `vit commit -m "msg"` | `vit add` + `git commit` |
 | New approach | `vit branch experiment` | `git checkout -b` |
 | Switch | `vit checkout main` | `git checkout`, deserialize → Resolve |
-| Combine | `vit merge color-grade` | `git merge` → validate → AI if needed |
+| Combine | `vit merge color-grade` | clip-level 3-way merge → `git merge --no-commit` + commit → validate → AI if needed |
 | See changes | `vit diff` | Human-readable timeline diff |
 | History | `vit log` | Formatted `git log` |
 | Undo | `vit revert` | `git revert HEAD` |
@@ -131,7 +131,7 @@ All scripts follow the pattern: add vit to path, get `resolve`/`project`/`timeli
 
 Git merges work when different domains are edited. AI steps in for cross-domain issues: orphaned refs (deleted clip in color.json), audio/video sync, overlapping clips, speed mismatches. **Details:** `@docs/AI_MERGE_DETAILS.md`
 
-Flow: Try git merge → post-merge validation (validator.py) → if issues, send to LLM (ai_merge.py) → user confirms → write resolved files.
+Flow: clip-level 3-way merge (`merge_utils.perform_merge`, shared by CLI and panels; same-property conflicts are asked, never silently picked) → git records a two-parent merge commit → post-merge validation (validator.py) → if errors, send to LLM (ai_merge.py) → user confirms → commit fix-up.
 
 **AI in the GUI is enrichment-only.** The panel never blocks on AI — `analyze_branch_comparison` and `classify_commit_type` degrade to heuristic fallbacks if `GEMINI_API_KEY` is absent. AI conflict resolution (`merge_with_ai`) only runs in the CLI (`vit merge`); use `vit merge --no-ai` to skip it entirely. The GUI works 100% without a key.
 

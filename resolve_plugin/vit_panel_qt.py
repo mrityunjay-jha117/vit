@@ -311,10 +311,11 @@ class IPCClient:
         self.sock.connect(("127.0.0.1", port))
         self._buf = b""
         self._lock = threading.Lock()
+        self._token = os.environ.get("VIT_PANEL_TOKEN", "")
 
     def send(self, request: dict) -> dict:
         with self._lock:
-            data = json.dumps(request) + "\n"
+            data = json.dumps(dict(request, token=self._token)) + "\n"
             self.sock.sendall(data.encode("utf-8"))
             while True:
                 while b"\n" in self._buf:

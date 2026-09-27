@@ -166,10 +166,10 @@ def main():
 
     def on_merge():
         from vit.core import (
-            git_add, git_commit, git_merge, git_is_clean,
-            git_current_branch, git_list_branches, git_list_conflicted_files,
-            git_checkout_theirs, GitError,
+            git_add, git_commit, git_is_clean,
+            git_current_branch, git_list_branches, GitError,
         )
+        from vit.merge_utils import format_conflicts, perform_merge
         from vit.serializer import serialize_timeline
         from vit.deserializer import deserialize_timeline
         from vit.validator import validate_project, format_issues
@@ -200,22 +200,17 @@ def main():
                     append_log(f"Auto-save failed: {e}")
                     show_error("Vit", str(e))
                     return
-        success, output = git_merge(project_dir, target)
-        if not success:
-            conflicted = git_list_conflicted_files(project_dir)
-            append_log(f"Conflicts in: {', '.join(conflicted)}")
-            auto_resolvable = [f for f in conflicted if f.endswith(".drx") or f.startswith("timeline/")]
-            non_resolvable = [f for f in conflicted if f not in auto_resolvable]
-            if auto_resolvable and not non_resolvable:
-                append_log("Auto-resolving conflicts...")
-                try:
-                    git_checkout_theirs(project_dir, auto_resolvable)
-                    git_add(project_dir, auto_resolvable)
-                    git_commit(project_dir, f"vit: merged '{target}' (auto-resolved)")
-                    success = True
-                    append_log("Auto-resolved.")
-                except GitError as e:
-                    append_log(f"Auto-resolve failed: {e}")
+        try:
+            outcome = perform_merge(project_dir, target)
+        except (GitError, ValueError) as e:
+            append_log(f"Merge failed: {e}")
+            show_error("Vit", f"Merge failed:\n{e}")
+            return
+        if outcome.status == "up_to_date":
+            append_log(f"'{current}' already contains everything from '{target}'.")
+            show_message("Vit", "Already up to date.")
+            return
+        success = outcome.status == "merged"
         if success:
             issues = validate_project(project_dir)
             if issues:
@@ -230,8 +225,10 @@ def main():
             refresh_branch()
             show_message("Vit", f"Merged '{target}' into '{current}'.")
         else:
-            append_log("Merge has conflicts. Use 'vit merge' from terminal for AI resolution.")
-            show_error("Vit", f"Merge conflicts.\nUse terminal: vit merge {target}")
+            details = format_conflicts(outcome.conflicts, current, target)
+            append_log("Both branches changed the same thing — nothing was merged:\n" + details)
+            show_error("Vit", "Both branches changed the same thing — nothing was merged:\n"
+                       f"{details}\n\nRun 'vit merge {target}' in a terminal to choose which version wins.")
 
     def on_push():
         from vit.core import git_current_branch, git_push, GitError

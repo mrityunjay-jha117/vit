@@ -23,9 +23,6 @@ from .core import (
     git_list_branches,
     git_list_conflicted_files,
     git_log,
-    git_merge,
-    git_merge_abort,
-    git_merge_base,
     git_pull,
     git_push,
     git_push_set_upstream,
@@ -33,11 +30,10 @@ from .core import (
     git_remote_list,
     git_remote_remove,
     git_revert,
-    git_show_file,
     git_status,
     is_git_repo,
 )
-from .json_writer import read_all_domain_files, write_timeline
+from .json_writer import write_timeline
 from .validator import format_issues, validate_project
 
 
@@ -98,11 +94,33 @@ def _ensure_git_identity(project_dir: str) -> None:
                 git_config_set(project_dir, "user.email", email)
 
 
+def _require_committable(project_dir: str) -> None:
+    """Refuse to commit unresolved conflicts or domain JSON that doesn't parse."""
+    from .merge_utils import domain_file_map
+
+    conflicted = git_list_conflicted_files(project_dir)
+    if conflicted:
+        print(f"  Error: unresolved merge conflicts in {', '.join(conflicted)}.")
+        print("  Run 'git merge --abort', then 'vit merge <branch>' to merge clip by clip.")
+        sys.exit(1)
+    for relpath in domain_file_map().values():
+        path = os.path.join(project_dir, relpath)
+        if not os.path.exists(path):
+            continue
+        try:
+            with open(path) as f:
+                json.load(f)
+        except json.JSONDecodeError as e:
+            print(f"  Error: {relpath} is not valid JSON ({e}). Not committing.")
+            sys.exit(1)
+
+
 def cmd_commit(args):
     """Stage and commit current state."""
     project_dir = _require_project()
 
     _ensure_git_identity(project_dir)
+    _require_committable(project_dir)
     git_add(project_dir, ["timeline/", "assets/", ".vit/", ".gitignore"])
 
     message = args.message
@@ -116,16 +134,16 @@ def cmd_commit(args):
                 suggestion = suggest_commit_message(diff_text)
                 if suggestion:
                     print(f'  AI suggested: "{suggestion}"')
-                    response = input("  Use this message? [Y/n/edit]: ").strip().lower()
-                    if response in ("", "y", "yes"):
+                    response = input("  Use this message? [Y/n/edit]: ").strip()
+                    if response.lower() in ("", "y", "yes"):
                         message = suggestion
-                    elif response in ("n", "no"):
+                    elif response.lower() in ("n", "no"):
                         message = None  # will fall through to default
                     else:
                         # User typed a custom message
                         message = response
-        except Exception:
-            pass  # Fall through to default
+        except Exception as e:
+            print(f"  (AI commit message unavailable: {e})")
         if not message:
             message = "vit: save version"
 
@@ -170,12 +188,42 @@ def cmd_checkout(args):
     print(f"  Switched to '{args.ref}'")
 
 
+def _ask_conflict_resolutions(conflicts: list, ours: str, theirs: str):
+    """Ask which side wins for each conflicting property. None = user aborted."""
+    from .merge_utils import format_conflicts
+
+    print(f"\n  Both branches changed the same thing in {len(conflicts)} place(s).")
+    print("  Everything else merges automatically.\n")
+    resolutions = {}
+    for conflict in conflicts:
+        print(format_conflicts([conflict], ours_label=ours, theirs_label=theirs))
+        while True:
+            try:
+                choice = input(f"    Keep [o]urs ({ours}) / take [t]heirs ({theirs}) / [a]bort: ").strip().lower()
+            except (EOFError, KeyboardInterrupt):
+                return None
+            if choice in ("o", "ours"):
+                resolutions[conflict["path"]] = "ours"
+                break
+            if choice in ("t", "theirs"):
+                resolutions[conflict["path"]] = "theirs"
+                break
+            if choice in ("a", "abort"):
+                return None
+        print()
+    return resolutions
+
+
 def cmd_merge(args):
     """Merge a branch into current branch."""
     from .core import git_is_clean
+    from .merge_utils import perform_merge
     project_dir = _require_project()
     branch = args.branch
     current = git_current_branch(project_dir)
+    if branch == current:
+        print(f"  Error: can't merge '{branch}' into itself.")
+        sys.exit(1)
 
     # Auto-commit any outstanding changes before merge
     if not git_is_clean(project_dir):
@@ -187,7 +235,7 @@ def cmd_merge(args):
             if "nothing to commit" not in str(e):
                 raise
 
-    # Pre-merge AI analysis
+    # Pre-merge AI analysis (enrichment only — never blocks on failure)
     if not args.no_ai:
         try:
             from .differ import get_branch_diff_by_category
@@ -213,126 +261,52 @@ def cmd_merge(args):
                     if response in ("n", "no"):
                         print("  Merge cancelled.")
                         return
-        except Exception:
-            pass  # Skip analysis on any failure
+        except Exception as e:
+            print(f"  (AI pre-merge analysis skipped: {e})")
 
     print(f"  Merging '{branch}' into '{current}'...")
+    outcome = perform_merge(project_dir, branch)
+    if outcome.status == "up_to_date":
+        print(f"  Already up to date — '{current}' contains everything from '{branch}'.")
+        return
+    if outcome.status == "conflicts":
+        resolutions = _ask_conflict_resolutions(outcome.conflicts, current, branch)
+        if resolutions is None:
+            print("  Merge cancelled. Nothing was changed.")
+            sys.exit(1)
+        outcome = perform_merge(project_dir, branch, resolutions)
 
-    # Capture pre-merge state for AI merge if needed
-    pre_merge_files = read_all_domain_files(project_dir)
+    print(f"  Merged '{branch}' into '{current}' (commit {outcome.commit}).")
+    if outcome.git_text_conflicts:
+        print(f"  Line-based git would have conflicted in: {', '.join(outcome.git_text_conflicts)}")
+        print("  Vit merged those files clip by clip instead.")
 
-    success, output = git_merge(project_dir, branch)
+    issues = validate_project(project_dir)
+    if not issues:
+        print("  Post-merge validation passed.")
+        return
 
-    if success:
-        # Git merge succeeded — run post-merge validation
-        print("  Git merge succeeded.")
-        issues = validate_project(project_dir)
+    print(f"\n  Post-merge validation found issues:")
+    print(format_issues(issues))
+    errors = [i for i in issues if i.severity == "error"]
+    if not errors:
+        return
+    if args.no_ai:
+        print("  Fix these in your editor, then run 'vit commit'.")
+        return
 
-        # Get merge base and branch files for overlap detection
-        merge_base_ref = git_merge_base(project_dir, current, branch)
-        base_files = _load_files_at_ref(project_dir, merge_base_ref) if merge_base_ref else {}
-        theirs_files = _load_files_at_ref(project_dir, branch)
-
-        # Check if both branches modified the same domain files
-        overlapping_domains = _detect_overlapping_domains(
-            base_files, pre_merge_files, theirs_files
-        )
-
-        errors = [i for i in issues if i.severity == "error"]
-        needs_ai_review = (
-            not args.no_ai and (errors or overlapping_domains)
-        )
-
-        if not issues and not overlapping_domains:
-            print("  Post-merge validation passed.")
-            return
-
-        if issues:
-            print(f"\n  Post-merge validation found issues:")
-            print(format_issues(issues))
-
-        if overlapping_domains and not issues:
-            print(f"\n  Both branches modified: {', '.join(overlapping_domains)}")
-            print("  Running AI review to check for semantic conflicts...")
-
-        if needs_ai_review:
-            from .ai_merge import merge_with_ai
-            resolved = merge_with_ai(
-                project_dir, branch,
-                base_files, pre_merge_files, theirs_files,
-                issues, [],
-            )
-            if resolved:
-                git_add(project_dir, ["timeline/", "assets/"])
-                git_commit(project_dir, f"vit: AI-resolved merge of '{branch}'")
-                print("  Merge complete with AI resolution.")
-            else:
-                if errors:
-                    print("  Merge completed with unresolved issues. Review manually.")
-                else:
-                    print("  AI review declined. Merge completed.")
-        else:
-            if errors:
-                print("  Merge completed with issues. Review manually.")
+    from .ai_merge import merge_with_ai
+    resolved = merge_with_ai(
+        project_dir, branch,
+        outcome.base_files, outcome.merged_files, outcome.theirs_files,
+        issues, [],
+    )
+    if resolved:
+        git_add(project_dir, ["timeline/", "assets/"])
+        git_commit(project_dir, f"vit: AI fix-up after merging '{branch}'")
+        print("  AI fix-up committed.")
     else:
-        # Git merge failed — conflicts
-        print("  Git merge has conflicts.")
-        conflicted = git_list_conflicted_files(project_dir)
-
-        if conflicted:
-            print(f"  Conflicted files: {', '.join(conflicted)}")
-
-        if args.no_ai:
-            print("  Resolve conflicts manually, then run 'vit commit'.")
-            return
-
-        # Try AI resolution
-        print("\n  Attempting AI-assisted conflict resolution...")
-        merge_base_ref = git_merge_base(project_dir, current, branch)
-        base_files = _load_files_at_ref(project_dir, merge_base_ref) if merge_base_ref else {}
-        theirs_files = _load_files_at_ref(project_dir, branch)
-
-        # Abort the failed merge to get clean state for AI
-        git_merge_abort(project_dir)
-
-        from .ai_merge import merge_with_ai
-        resolved = merge_with_ai(
-            project_dir, branch,
-            base_files, pre_merge_files, theirs_files,
-            [], conflicted,
-        )
-        if resolved:
-            git_add(project_dir, ["timeline/", "assets/"])
-            git_commit(project_dir, f"vit: AI-resolved merge of '{branch}'")
-            print("  Merge complete with AI resolution.")
-        else:
-            print("  AI merge failed. Resolve conflicts manually.")
-            # Re-attempt the merge so user can resolve
-            git_merge(project_dir, branch)
-
-
-def _load_files_at_ref(project_dir: str, ref: str) -> dict:
-    """Load all domain files at a specific git ref."""
-    domain_paths = {
-        "cuts": "timeline/cuts.json",
-        "color": "timeline/color.json",
-        "audio": "timeline/audio.json",
-        "effects": "timeline/effects.json",
-        "markers": "timeline/markers.json",
-        "metadata": "timeline/metadata.json",
-        "manifest": "assets/manifest.json",
-    }
-    files = {}
-    for domain, path in domain_paths.items():
-        content = git_show_file(project_dir, ref, path)
-        if content:
-            try:
-                files[domain] = json.loads(content)
-            except json.JSONDecodeError:
-                files[domain] = {}
-        else:
-            files[domain] = {}
-    return files
+        print("  Merge is committed; the issues above still need fixing.")
 
 
 def _detect_overlapping_domains(
@@ -426,6 +400,7 @@ def cmd_revert(args):
         print("  Reverted last commit.")
     except GitError as e:
         print(f"  Error: {e}")
+        sys.exit(1)
 
 
 def cmd_push(args):
@@ -448,6 +423,7 @@ def cmd_push(args):
             print("    2. Add ~/.ssh/id_ed25519.pub at https://github.com/settings/ssh/new")
             print("    3. git remote set-url origin git@github.com:user/repo.git")
             print("  Or re-run 'vit collab setup' for a guided walkthrough.")
+        sys.exit(1)
 
 
 def cmd_pull(args):
@@ -462,6 +438,7 @@ def cmd_pull(args):
             print(output)
     except GitError as e:
         print(f"  Error: {e}")
+        sys.exit(1)
 
 
 def cmd_validate(args):
@@ -557,6 +534,8 @@ def cmd_install_resolve(args):
         print(f"  Error: resolve_plugin/ directory not found.")
         print(f"  Checked: {os.path.join(package_dir, 'resolve_plugin')}")
         print(f"  Checked: {plugin_dir}")
+        print("  Install from a git checkout with 'pip install -e .' (the plugin")
+        print("  scripts are not part of the wheel), or use install.sh / install.ps1.")
         sys.exit(1)
 
     scripts_dir = _writable_scripts_dir()
@@ -592,10 +571,20 @@ def cmd_install_resolve(args):
     print("  Restart Resolve, then run Workspace > Scripts > Vit for the unified panel.")
 
 
+def _default_clone_dir(url: str) -> str:
+    """Folder name git would pick: last path segment without a '.git' suffix."""
+    import re
+    path = url.rstrip("/\\")
+    if re.search(r"[/\\]\.git$", path):
+        path = path[:-5]  # ".../project/.git" -> ".../project"
+    name = re.split(r"[/\\:]", path)[-1]
+    return name[:-4] if name.endswith(".git") else name
+
+
 def cmd_clone(args):
     """Clone a remote vit repo to a local directory."""
     url = args.url
-    dest = args.directory or os.path.basename(url.rstrip("/").rstrip(".git"))
+    dest = args.directory or _default_clone_dir(url)
     if os.path.exists(dest):
         print(f"  Error: '{dest}' already exists.")
         sys.exit(1)
