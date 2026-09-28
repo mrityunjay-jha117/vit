@@ -128,29 +128,6 @@ def test_merge_up_to_date(project):
     assert perform_merge(project, "feature").status == "up_to_date"
 
 
-def test_panel_merge_keeps_current_branch_work(project):
-    """Regression: the Resolve panel used `git checkout --theirs` and dropped ours."""
-    from resolve_plugin.vit_panel_launcher import handle_request
-
-    class _Project:
-        def GetCurrentTimeline(self):
-            return None
-
-    class _Resolve:
-        def GetProjectManager(self):
-            return self
-
-        def GetCurrentProject(self):
-            return _Project()
-
-    _diverge(project, [_clip("a", 0), _clip("ours", 10)], [_clip("a", 0), _clip("theirs", 20)])
-
-    result = handle_request({"action": "merge", "branch": "feature"}, _Resolve(), project)
-
-    assert result["ok"], result
-    assert _clip_ids(project) == ["a", "ours", "theirs"]
-
-
 def test_commit_refuses_conflict_markers(project):
     _diverge(project, [_clip("a", 0), _clip("ours", 10)], [_clip("a", 0), _clip("theirs", 20)])
     ok, _ = git_merge(project, "feature")

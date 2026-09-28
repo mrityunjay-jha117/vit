@@ -8,7 +8,7 @@ Collaborators (editors, colorists, sound designers) work in parallel on branches
 
 ## How It Works
 
-Vit serializes your DaVinci Resolve timeline into **domain-split JSON files**:
+A timeline is stored as **domain-split JSON files**:
 
 | File | Contents | Typical Owner |
 |------|----------|---------------|
@@ -19,11 +19,13 @@ Vit serializes your DaVinci Resolve timeline into **domain-split JSON files**:
 | `markers.json` | Markers, notes | Anyone |
 | `metadata.json` | Frame rate, resolution, track counts | Rarely changed |
 
-Different roles edit different files, so Git merges them without conflicts. When cross-domain issues arise (e.g., a deleted clip still referenced in `color.json`), an AI-powered semantic merge resolves them.
+A clip is a *reference* to frames of a media file (`source_start_frame` … `source_end_frame`) placed on the timeline (`record_start_frame` … `record_end_frame`). Media never enters git — `assets/manifest.json` records only paths and checksums.
+
+Merging is **clip-level**: clips are matched by id and merged field by field, so two editors adding clips to the same timeline combine cleanly even where line-based git would report a conflict. Only the same property changed differently on both branches needs a human decision. A rule-based validator then checks for cross-domain problems (e.g. a deleted clip still referenced in `color.json`).
 
 ## Installation
 
-**Requirements:** Python 3.8+, Git, DaVinci Resolve (optional, for Resolve integration)
+**Requirements:** Python 3.8+, Git 2.38+
 
 ### One-Line Install (macOS/Linux)
 
@@ -36,122 +38,59 @@ curl -fsSL https://raw.githubusercontent.com/LucasHJin/vit/main/install.sh | bas
 ```bash
 git clone https://github.com/LucasHJin/vit.git
 cd vit
-pip install -e .      # editable: the Resolve scripts load vit from this checkout
-vit install-resolve   # symlink plugin scripts into DaVinci Resolve
+pip install -e .
 ```
 
-For the optional Qt-based GUI panel inside Resolve (otherwise a Tkinter panel is used):
+## Try It: Vit Studio (browser demo)
+
+A small browser-based video editor that runs on top of vit-core and real git — no NLE needed:
 
 ```bash
-pip install -e ".[qt]"
+python demo/server.py
 ```
 
-## Usage Guide (GUI — Primary Workflow)
-
-The main way to use Vit is through the **panel inside DaVinci Resolve** (`Workspace → Scripts → Vit Panel`). You only need the terminal for the one-time project setup.
-
-### What you need before starting
-
-- **A shared GitHub repo** (or any Git remote) — this is how collaborators share timeline changes. Create an empty repo on GitHub first (no README, no license).
-- **Your footage shared separately** — Vit tracks edit decisions, not raw video files. Share footage the way you already do (shared drive, Dropbox, server). Collaborators relink in Resolve if paths differ.
-- **An initialized vit project** — run `vit init` once in Terminal to create the `.vit/` config and initial timeline snapshot. This produces the JSON metadata files (`cuts.json`, `color.json`, etc.) that Vit versions from that point on.
-
-> See [`docs/COLLABORATION.md`](docs/COLLABORATION.md) for the full step-by-step collaboration setup, including how to invite teammates and handle relinking footage.
-
----
-
-### Person who starts the project (once, in Terminal)
-
-```bash
-# 1. Create and enter the project folder
-vit init my-project
-cd my-project
-
-# 2. Connect to your shared GitHub repo
-vit collab setup   # paste your empty repo URL when prompted
-```
-
-Open DaVinci Resolve, load your project and timeline, then open the Vit Panel (`Workspace → Scripts → Vit Panel`) and **Save Version** to create the first snapshot. Vit serializes the timeline to JSON and commits it. Send the `vit clone …` URL that Terminal prints to your collaborators.
-
----
-
-### Collaborators joining (once, in Terminal)
-
-```bash
-# Clone the project
-vit clone https://github.com/yourname/your-repo.git
-cd your-repo
-
-# Pull the latest timeline state
-vit checkout main
-```
-
-Open Resolve, run **Vit Panel → Switch Branch**, choose your footage folder, and relink any offline clips. Then create your own branch:
-
-```bash
-vit branch your-name
-```
-
-From here on, everything happens in the panel.
-
----
-
-### Daily workflow (entirely in the Resolve panel)
-
-1. **Pull** — fetch the latest changes from the team
-2. **Switch Branch** — restore the timeline to your branch
-3. Edit in Resolve as usual
-4. **Save Version** — serialize your timeline changes and commit
-5. **Push** — share your work
-
----
-
-### Merging work (lead / editor)
-
-In the panel:
-
-1. Pull to get everyone's latest commits
-2. Switch to `main` (or whichever branch you merge into)
-3. **Merge** → select the branch to bring in
-4. Review the diff summary the panel shows; the panel uses AI to recommend a strategy when a key is set, or falls back to change-count heuristics without one
-5. Push the merged result
-6. Tell teammates to Pull and Switch Branch to see the merged timeline
-
-For complex cross-domain conflicts (e.g., a clip deleted on one branch but color-graded on another), use `vit merge <branch>` in Terminal — it runs the full AI-assisted resolution flow.
-
----
+Branch a timeline, edit on two branches in parallel, merge them, inspect history, and see the JSON on disk. See [`demo/README.md`](demo/README.md) for a 5-minute walkthrough.
 
 ## Quick Start (CLI)
 
-The CLI mirrors everything the panel does, useful for scripting or when outside Resolve:
-
 ```bash
-vit init                        # initialize project (required once)
+vit init my-project             # initialize a project (required once)
+cd my-project
 vit commit -m "rough cut done"  # save a version
-vit branch color-grade          # create a branch
-vit checkout color-grade        # switch to it
+vit branch color-grade          # create a branch and switch to it
 vit commit -m "first color pass"
 vit checkout main
-vit merge color-grade           # merge back
+vit merge color-grade           # clip-level merge; asks only about true conflicts
 vit diff                        # see what changed
 vit log                         # version history
 ```
+
+### Sharing with a team
+
+```bash
+vit collab setup                # connect an empty GitHub repo and push
+vit clone <url>                 # collaborators: get the project
+vit push / vit pull             # share and fetch work
+```
+
+Footage is shared separately (shared drive, Dropbox, server); `assets/manifest.json` lists what each clip needs. See [`docs/COLLABORATION.md`](docs/COLLABORATION.md).
 
 ## Commands
 
 | Command | Description |
 |---------|-------------|
 | `vit init` | Initialize a new vit project |
-| `vit add` | Serialize timeline and stage changes |
-| `vit commit -m "msg"` | Stage + commit |
+| `vit add` | Stage the timeline JSON |
+| `vit commit -m "msg"` | Stage + commit (refuses unresolved conflicts or invalid JSON) |
 | `vit branch <name>` | Create a new branch |
-| `vit checkout <name>` | Switch branches (restores timeline in Resolve) |
-| `vit merge <branch>` | Merge a branch (with AI conflict resolution) |
+| `vit checkout <name>` | Switch branches |
+| `vit merge <branch>` | Clip-level merge; `--no-ai` skips the optional AI analysis / fix-up |
 | `vit diff` | Human-readable timeline diff |
 | `vit log` | Formatted version history |
 | `vit revert` | Undo the last commit |
 | `vit push` / `vit pull` | Sync with a remote |
 | `vit status` | Show project status |
+| `vit validate` | Check the timeline for orphaned refs, overlaps, sync issues |
 
 ## Project Structure
 
@@ -159,45 +98,34 @@ vit log                         # version history
 vit/                      # Core library
   cli.py                  # CLI entry point
   core.py                 # Git operations wrapper
-  serializer.py           # Resolve timeline -> JSON
-  deserializer.py         # JSON -> Resolve timeline
-  ai_merge.py             # AI-powered conflict resolution (Gemini)
+  merge_utils.py          # Clip-level 3-way merge (perform_merge)
   differ.py               # Human-readable diff formatting
   validator.py            # Post-merge validation
   models.py               # Data models
   json_writer.py          # Domain-split JSON I/O
+  ai_merge.py             # Optional AI assistance (Gemini)
+  serializer.py           # DaVinci Resolve timeline -> JSON (not used by the MVP)
+  deserializer.py         # JSON -> DaVinci Resolve timeline (not used by the MVP)
 
-resolve_plugin/           # DaVinci Resolve integration (primary UI)
-  vit_panel_launcher.py   # Panel backend: all git + serialize/deserialize logic
-  vit_panel_tkinter.py    # Tkinter panel UI (default)
-  vit_panel_qt.py         # Qt panel UI (optional, pip install ".[qt]")
-  vit_commit.py           # Script menu: commit
-  vit_branch.py           # Script menu: branch
-  vit_merge.py            # Script menu: merge
-  vit_status.py           # Script menu: status
-  vit_restore.py          # Script menu: restore timeline
-
+demo/                     # Vit Studio — browser editor + local server
 tests/                    # Test suite
 docs/                     # Reference docs
-  COLLABORATION.md        # Step-by-step multi-user setup
+  COLLABORATION.md        # Multi-user setup
   JSON_SCHEMAS.md         # Full schema for all domain JSON files
-  RESOLVE_API_LIMITATIONS.md  # Known Resolve API constraints
-  AI_MERGE_DETAILS.md     # AI merge architecture and prompts
+  AI_MERGE_DETAILS.md     # Merge flow and AI prompts
+  RESOLVE_API_LIMITATIONS.md  # Notes for a future Resolve integration
 ```
 
-## AI Features
+## AI Features (optional)
 
-Vit uses the **Gemini API** (`gemini-2.5-flash`) to assist with video editing workflows that go beyond what plain Git can handle. Key uses:
+Vit can use the **Gemini API** (`gemini-2.5-flash`). Merging never depends on it — the merge result is deterministic.
 
-- **Semantic merge resolution** — When a merge creates cross-domain conflicts (e.g., one branch deletes a clip while another color-grades it), the AI analyzes BASE/OURS/THEIRS states across all domain files and produces structured per-domain decisions with confidence levels
-- **Interactive conflict clarification** — For ambiguous merges (low-confidence decisions), the AI presents options to the user, then resolves the final JSON based on their choices
-- **Post-merge validation** — A rule-based validator catches orphaned references, overlapping clips, audio/video sync mismatches, and speed/duration inconsistencies after every merge; these issues feed into the AI prompt for smarter resolution
-- **Commit message suggestions** — `vit commit` can auto-generate a descriptive message from the timeline diff using video editing terminology (e.g., "Add B-roll on V2, trim interview end point")
-- **Log summaries** — `vit log --summary` produces a natural-language overview of recent commits for the team
-- **Branch comparison analysis** — The Resolve panel uses AI to compare two branches and recommend a merge strategy before you commit to it
-- **Commit classification** — Commits are auto-categorized as audio, video, or color changes (with a fast heuristic fallback when AI is unavailable)
+- **Post-merge fix-up** — if validation finds errors after a merge (e.g. orphaned references, overlapping clips), `vit merge` can ask the AI to propose a fix, shows you the diff, and commits only if you confirm
+- **Pre-merge summary** — `vit merge` prints an AI summary of what each branch changed
+- **Commit message suggestions** — `vit commit` without `-m` can suggest a message from the timeline diff
+- **Log summaries** — `vit log --summary`
 
-Set `GEMINI_API_KEY` in your environment or project `.env` file to enable AI features. All AI features degrade gracefully — Vit works fully without an API key, you just lose the smart merge and suggestions.
+Set `GEMINI_API_KEY` in your environment or project `.env` file to enable them. Everything works without a key.
 
 ## Testing
 

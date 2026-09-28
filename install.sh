@@ -95,19 +95,6 @@ if ! command -v vit &>/dev/null; then
     fi
 fi
 
-# ── Install Resolve plugin scripts ───────────
-
-echo "  Installing DaVinci Resolve scripts..."
-if command -v vit &>/dev/null; then
-    vit install-resolve
-else
-    "$VIT_BIN/vit" install-resolve 2>/dev/null || {
-        echo ""
-        echo "  Note: Could not auto-install Resolve scripts."
-        echo "  After restarting your terminal, run: vit install-resolve"
-    }
-fi
-
 # ── Done ──────────────────────────────────────
 
 echo ""
@@ -115,12 +102,7 @@ echo "  Vit installed successfully!"
 echo ""
 echo "  Next steps:"
 echo "    1. Restart your terminal (or run: source ${SHELL_RC:-~/.bashrc})"
-echo "    2. Create and open your project in DaVinci Resolve"
-echo "    3. Run: vit init your-project-name (in your terminal)"
-echo "       (creates a vit tracking folder anywhere on disk — location doesn't matter)"
-echo "    4. Run: vit collab setup"
-echo "       (connect to a GitHub repo so your team can share the project)"
-echo "    5. In Resolve: Workspace > Scripts > Vit"
-echo "       (first launch will ask you to select the vit folder you just created)"
-echo "    6. The panel handles everything from there (save, branch, merge, push, pull)"
+echo "    2. Try the editor demo: python $VIT_SRC/demo/server.py"
+echo "    3. Or start a project from the terminal: vit init your-project-name"
+echo "    4. Share it with your team: vit collab setup"
 echo ""

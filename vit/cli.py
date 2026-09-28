@@ -3,7 +3,6 @@
 import argparse
 import json
 import os
-import shutil
 import sys
 
 from . import __version__
@@ -71,8 +70,8 @@ def cmd_add(args):
     """Serialize current timeline state and stage files."""
     project_dir = _require_project()
 
-    # If Resolve is available, serialize. Otherwise just stage existing files.
-    # The serializer is called from Resolve plugin scripts, not from CLI directly.
+    # Stages the domain JSON already on disk (written by an editor front end,
+    # e.g. the demo server). The CLI never serializes a timeline itself.
     # CLI 'add' just stages the JSON files that were already written.
     git_add(project_dir, ["timeline/", "assets/"])
     print("  Staged timeline and asset files.")
@@ -256,7 +255,9 @@ def cmd_merge(args):
                     print(f"  ⚠ Potential conflicts: {', '.join(conflicts)}")
                 if explanation:
                     print(f"  Analysis: {explanation}")
-                if rec == "manual_review":
+                # Only a real AI recommendation is worth an extra confirmation;
+                # the clip-level merge below asks about actual conflicts anyway.
+                if rec == "manual_review" and analysis.get("ai_available", True):
                     response = input("  Proceed with merge? [Y/n]: ").strip().lower()
                     if response in ("n", "no"):
                         print("  Merge cancelled.")
@@ -452,125 +453,6 @@ def cmd_validate(args):
         print("  Validation passed — no issues found.")
 
 
-if sys.platform == "win32":
-    # Resolve only scans %PROGRAMDATA% (all users) and %APPDATA%\...\Support
-    # (per user) on Windows — the per-user path requires the "Support" segment.
-    RESOLVE_SCRIPTS_DIR = os.path.join(
-        os.environ.get("PROGRAMDATA", r"C:\ProgramData"),
-        "Blackmagic Design",
-        "DaVinci Resolve",
-        "Fusion",
-        "Scripts",
-        "Edit",
-    )
-    RESOLVE_SCRIPTS_DIR_FALLBACK = os.path.join(
-        os.environ.get("APPDATA", ""),
-        "Blackmagic Design",
-        "DaVinci Resolve",
-        "Support",
-        "Fusion",
-        "Scripts",
-        "Edit",
-    )
-elif sys.platform == "darwin":
-    RESOLVE_SCRIPTS_DIR = os.path.expanduser(
-        "~/Library/Application Support/Blackmagic Design/DaVinci Resolve/Fusion/Scripts/Edit"
-    )
-    RESOLVE_SCRIPTS_DIR_FALLBACK = None
-else:
-    RESOLVE_SCRIPTS_DIR = os.path.expanduser(
-        "~/.local/share/DaVinciResolve/Fusion/Scripts/Edit"
-    )
-    RESOLVE_SCRIPTS_DIR_FALLBACK = None
-
-RESOLVE_SCRIPT_NAMES = [
-    "vit_panel.py",
-]
-
-
-_RESOLVE_MENU_NAMES = {
-    "vit_panel.py": "Vit.py",
-}
-
-
-def _resolve_menu_name(script_name: str) -> str:
-    return _RESOLVE_MENU_NAMES.get(script_name, script_name)
-
-
-def _writable_scripts_dir():
-    """Create and return the Resolve scripts dir, falling back to the
-    per-user location on Windows when ProgramData is not writable."""
-    try:
-        os.makedirs(RESOLVE_SCRIPTS_DIR, exist_ok=True)
-        # makedirs succeeds on an existing dir even without write access
-        probe = os.path.join(RESOLVE_SCRIPTS_DIR, ".vit-write-probe")
-        with open(probe, "w"):
-            pass
-        os.remove(probe)
-        return RESOLVE_SCRIPTS_DIR
-    except OSError:
-        if RESOLVE_SCRIPTS_DIR_FALLBACK is None:
-            raise
-        print("  Note: no write access to ProgramData — using per-user scripts folder.")
-        os.makedirs(RESOLVE_SCRIPTS_DIR_FALLBACK, exist_ok=True)
-        return RESOLVE_SCRIPTS_DIR_FALLBACK
-
-
-def cmd_install_resolve(args):
-    """Install Resolve plugin scripts via symlink."""
-    # Find the resolve_plugin directory — check multiple locations
-    package_dir = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
-    plugin_dir = os.path.join(package_dir, "resolve_plugin")
-
-    if not os.path.isdir(plugin_dir):
-        # Fallback: check ~/.vit/vit-src/ (curl installer location)
-        # Also update package_dir so package_path gets the correct value
-        vit_src = os.path.join(os.path.expanduser("~"), ".vit", "vit-src")
-        if os.path.isdir(os.path.join(vit_src, "resolve_plugin")):
-            package_dir = vit_src
-            plugin_dir = os.path.join(package_dir, "resolve_plugin")
-
-    if not os.path.isdir(plugin_dir):
-        print(f"  Error: resolve_plugin/ directory not found.")
-        print(f"  Checked: {os.path.join(package_dir, 'resolve_plugin')}")
-        print(f"  Checked: {plugin_dir}")
-        print("  Install from a git checkout with 'pip install -e .' (the plugin")
-        print("  scripts are not part of the wheel), or use install.sh / install.ps1.")
-        sys.exit(1)
-
-    scripts_dir = _writable_scripts_dir()
-
-    for script_name in RESOLVE_SCRIPT_NAMES:
-        source = os.path.join(plugin_dir, script_name)
-        if not os.path.exists(source):
-            print(f"  Warning: {script_name} not found, skipping.")
-            continue
-
-        menu_name = _resolve_menu_name(script_name)
-        dest = os.path.join(scripts_dir, menu_name)
-
-        # Remove existing link/file
-        if os.path.islink(dest) or os.path.exists(dest):
-            os.remove(dest)
-
-        if sys.platform == "win32":
-            shutil.copy2(source, dest)
-        else:
-            os.symlink(source, dest)
-        print(f"  Linked: {menu_name} -> {source}")
-
-    # Save the repo root path so Resolve scripts can find the vit package
-    # even if __file__ or symlink resolution fails in Resolve's Python
-    vit_user_dir = os.path.expanduser("~/.vit")
-    os.makedirs(vit_user_dir, exist_ok=True)
-    with open(os.path.join(vit_user_dir, "package_path"), "w") as f:
-        f.write(package_dir)
-    print(f"  Saved package path: {package_dir}")
-
-    print(f"\n  Installed {len(RESOLVE_SCRIPT_NAMES)} script(s) to Resolve.")
-    print("  Restart Resolve, then run Workspace > Scripts > Vit for the unified panel.")
-
-
 def _default_clone_dir(url: str) -> str:
     """Folder name git would pick: last path segment without a '.git' suffix."""
     import re
@@ -595,8 +477,7 @@ def cmd_clone(args):
         print(f"  Error: {e}")
         sys.exit(1)
     print(f"  Cloned into '{dest}'")
-    print(f"  Note: Media files are not included. Open the project in Resolve and relink any offline clips.")
-    print(f"  Run 'vit checkout main' inside '{dest}' to restore the latest timeline.")
+    print(f"  Note: Media files are not included — assets/manifest.json lists what each clip needs.")
 
 
 def cmd_remote(args):
@@ -747,52 +628,8 @@ def cmd_collab_setup(args):
     print()
     print("  Each collaborator should:")
     print("    1. Run: vit clone <url>")
-    print("    2. Open the project folder in DaVinci Resolve")
-    print("    3. Relink any offline media files")
-    print("    4. Create their own branch: vit branch <name>")
-
-
-def cmd_uninstall_resolve(args):
-    """Remove Resolve plugin symlinks."""
-    # Include legacy script names so old installs get cleaned up
-    _ALL_VIT_NAMES = [
-        "Vit.py",
-        "Vit - Panel.py",
-        "Vit - Save Version.py",
-        "Vit - New Branch.py",
-        "Vit - Merge Branch.py",
-        "Vit - Switch Branch.py",
-        "Vit - Status.py",
-        "Vit - Push.py",
-        "Vit - Pull & Restore.py",
-    ]
-    script_dirs = [RESOLVE_SCRIPTS_DIR]
-    if sys.platform == "win32":
-        script_dirs.append(RESOLVE_SCRIPTS_DIR_FALLBACK)
-        # Legacy location used by older installers (missing "Support" —
-        # Resolve never scanned it, but clean up stray copies)
-        script_dirs.append(os.path.join(
-            os.environ.get("APPDATA", ""),
-            "Blackmagic Design",
-            "DaVinci Resolve",
-            "Fusion",
-            "Scripts",
-            "Edit",
-        ))
-
-    removed = 0
-    for menu_name in _ALL_VIT_NAMES:
-        for script_dir in script_dirs:
-            dest = os.path.join(script_dir, menu_name)
-            if os.path.islink(dest) or os.path.exists(dest):
-                os.remove(dest)
-                print(f"  Removed: {menu_name}")
-                removed += 1
-
-    if removed:
-        print(f"\n  Uninstalled {removed} scripts from Resolve.")
-    else:
-        print("  No vit scripts found in Resolve.")
+    print("    2. Make media available at the paths in assets/manifest.json")
+    print("    3. Create their own branch: vit branch <name>")
 
 
 def main():
@@ -896,14 +733,6 @@ def main():
     p_collab_setup = collab_sub.add_parser("setup", help="Guided remote setup wizard")
     p_collab_setup.set_defaults(func=cmd_collab_setup)
     p_collab.set_defaults(func=lambda a: p_collab.print_help())
-
-    # install-resolve
-    p_install = subparsers.add_parser("install-resolve", help="Install scripts into DaVinci Resolve")
-    p_install.set_defaults(func=cmd_install_resolve)
-
-    # uninstall-resolve
-    p_uninstall = subparsers.add_parser("uninstall-resolve", help="Remove scripts from DaVinci Resolve")
-    p_uninstall.set_defaults(func=cmd_uninstall_resolve)
 
     args = parser.parse_args()
 

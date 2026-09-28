@@ -381,7 +381,7 @@ def api_merge(_q, body):
     autosave_if_dirty(f"merging '{branch}'", author)
     set_author(author)
 
-    # Same clip-level merge the CLI and Resolve panels use: git records the
+    # Same clip-level merge `vit merge` uses: git records the
     # two-parent merge commit, vit supplies the merged timeline.
     outcome = perform_merge(PROJECT_DIR, branch, body.get("resolutions"))
     if outcome.status == "up_to_date":

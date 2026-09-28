@@ -10,10 +10,6 @@ setup(
         "google-generativeai",
         "rich",
     ],
-    extras_require={
-        # Optional Qt panel inside Resolve; without it the Tkinter panel is used.
-        "qt": ["PySide6"],
-    },
     entry_points={
         "console_scripts": [
             "vit=vit.cli:main",

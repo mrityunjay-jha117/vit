@@ -116,17 +116,6 @@ if (-not (Test-Path $vitCmd)) {
     Set-Content -Path $vitCmd -Value "@`"%~dp0python.exe`" -m vit.cli %*" -Encoding ASCII
 }
 
-# -- Install Resolve plugin scripts -----------
-
-Write-Host "  Installing DaVinci Resolve scripts..."
-try {
-    & "$VIT_VENV\Scripts\python.exe" -m vit.cli install-resolve
-} catch {
-    Write-Host ""
-    Write-Host "  Note: Could not auto-install Resolve scripts."
-    Write-Host "  After restarting your terminal, run: vit install-resolve"
-}
-
 # -- Done -------------------------------------
 
 Write-Host ""
@@ -134,12 +123,7 @@ Write-Host "  Vit installed successfully!"
 Write-Host ""
 Write-Host "  Next steps:"
 Write-Host "    1. Restart your terminal"
-Write-Host "    2. Create and open your project in DaVinci Resolve"
-Write-Host "    3. Run: vit init your-project-name (in your terminal)"
-Write-Host "       (creates a vit tracking folder anywhere on disk -- location doesn't matter)"
-Write-Host "    4. Run: vit collab setup"
-Write-Host "       (connect to a GitHub repo so your team can share the project)"
-Write-Host "    5. In Resolve: Workspace > Scripts > Vit"
-Write-Host "       (first launch will ask you to select the vit folder you just created)"
-Write-Host "    6. The panel handles everything from there (save, branch, merge, push, pull)"
+Write-Host "    2. Try the editor demo: python $VIT_SRC\demo\server.py"
+Write-Host "    3. Or start a project from the terminal: vit init your-project-name"
+Write-Host "    4. Share it with your team: vit collab setup"
 Write-Host ""

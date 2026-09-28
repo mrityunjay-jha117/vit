@@ -27,21 +27,20 @@ Each collaborator works on a branch. Vit serializes the NLE timeline into domain
 - **AI-assisted semantic merging** — LLM resolves cross-domain conflicts (e.g., deleted clip still in color.json)
 - **Snapshot-based** — each commit = full timeline state
 - **No media storage, no database** — JSON in git only
-- **CLI-first** — Resolve plugin scripts serve as in-NLE UI
+- **MVP-first** — a standalone browser editor (`demo/`) is the UI; no NLE plugin
 
 ---
 
 ## System Architecture
 
 ```
-Resolve Panel (primary)  → vit-core (Python) → Git (system binary)
-CLI (`vit` command)      → vit-core (Python) → Git (system binary)  [power users / fallback]
+Vit Studio (demo/, browser) → demo/server.py → vit-core (Python) → Git (system binary)
+CLI (`vit` command)                          → vit-core (Python) → Git (system binary)
 ```
 
-- **Primary interface:** Resolve plugin panel (`vit_panel_launcher.py` + `vit_panel_tkinter.py`), accessed via Resolve's Scripts menu. This is what end users (editors, colorists) interact with.
-- **vit-core:** serializer.py, deserializer.py, json_writer.py, core.py, ai_merge.py, differ.py, cli.py
-- **Resolve scripts dir:** `~/Library/Application Support/Blackmagic Design/DaVinci Resolve/Fusion/Scripts/Edit/`
-- **Fallback:** If Resolve API too limited → FCPXML + OpenTimelineIO; vit-core stays the same.
+- **Primary interface (MVP):** Vit Studio — `demo/server.py` (stdlib HTTP server) + `demo/static/` (vanilla JS editor). The browser edits the timeline JSON; the server writes it with vit's models and runs every git action through vit-core.
+- **vit-core:** core.py, merge_utils.py, json_writer.py, models.py, differ.py, validator.py, ai_merge.py, cli.py
+- **Resolve:** the Resolve plugin was removed for the MVP. `serializer.py` / `deserializer.py` (Resolve API ↔ JSON) remain for a future NLE integration but nothing in the MVP calls them.
 
 ---
 
@@ -61,9 +60,9 @@ CLI (`vit` command)      → vit-core (Python) → Git (system binary)  [power u
 
 ```
 vit/
-├── vit/           # cli.py, core.py, models.py, serializer.py, deserializer.py,
-│                   # json_writer.py, ai_merge.py, validator.py, differ.py
-├── resolve_plugin/  # vit_commit.py, vit_branch.py, vit_merge.py, vit_status.py, vit_restore.py
+├── vit/           # cli.py, core.py, merge_utils.py, models.py, json_writer.py,
+│                   # validator.py, differ.py, ai_merge.py, serializer.py, deserializer.py
+├── demo/          # Vit Studio: server.py + static/ (index.html, app.js, sources.js, style.css)
 ├── tests/
 └── docs/           # Optional top-up: JSON_SCHEMAS.md, RESOLVE_API_LIMITATIONS.md, AI_MERGE_DETAILS.md
 ```
@@ -99,15 +98,15 @@ Different roles = different files = conflict-free merges. **Full JSON schemas:**
 
 ## Vit Commands
 
-These are CLI commands for power users and scripting. Most users access equivalent actions via the Resolve panel GUI.
+CLI commands for power users and scripting. Vit Studio exposes the same actions in the browser.
 
 | Action | Command | Under the hood |
 |--------|---------|----------------|
 | Start tracking | `vit init` | `.vit/`, `git init`, initial snapshot |
-| Stage | `vit add` | Serialize → JSON, `git add timeline/ assets/` |
+| Stage | `vit add` | `git add timeline/ assets/` (JSON already on disk) |
 | Save version | `vit commit -m "msg"` | `vit add` + `git commit` |
 | New approach | `vit branch experiment` | `git checkout -b` |
-| Switch | `vit checkout main` | `git checkout`, deserialize → Resolve |
+| Switch | `vit checkout main` | `git checkout` |
 | Combine | `vit merge color-grade` | clip-level 3-way merge → `git merge --no-commit` + commit → validate → AI if needed |
 | See changes | `vit diff` | Human-readable timeline diff |
 | History | `vit log` | Formatted `git log` |
@@ -117,13 +116,13 @@ These are CLI commands for power users and scripting. Most users access equivale
 
 ---
 
-## Resolve Plugin Scripts
+## Vit Studio (demo/)
 
-**Primary user interface.** The panel (`vit_panel_launcher.py` + `vit_panel_tkinter.py`) is the main way users interact with Vit — launched from Resolve's Scripts menu. It exposes commit, branch, merge, push/pull, and status as GUI actions.
+**Primary user interface for the MVP.** `python demo/server.py` serves a browser editor at `http://127.0.0.1:8765`: media bin (procedural clips + imported video), viewer, timeline, inspector, branches, commit, history graph, merge with conflict choices, and a "JSON on disk" view.
 
-`vit_panel_launcher.py` handles all backend actions (serialize, deserialize, git ops) and serves responses to the UI layer. `vit_panel_tkinter.py` is the Tkinter-based fallback UI.
-
-All scripts follow the pattern: add vit to path, get `resolve`/`project`/`timeline`, call into vit-core. Symlink the folder to Resolve's Edit scripts dir.
+- Procedural sources are drawn from `(kind, source_frame)` in `sources.js`, so no media files are needed; imported videos live in `demo/workspace/media/`, outside git.
+- The server is local-only: it checks the Host header and requires an `X-Vit-Demo: 1` header on writes (CSRF/DNS-rebinding protection).
+- Merges go through `merge_utils.perform_merge`, the same code as `vit merge`.
 
 ---
 
@@ -131,9 +130,9 @@ All scripts follow the pattern: add vit to path, get `resolve`/`project`/`timeli
 
 Git merges work when different domains are edited. AI steps in for cross-domain issues: orphaned refs (deleted clip in color.json), audio/video sync, overlapping clips, speed mismatches. **Details:** `@docs/AI_MERGE_DETAILS.md`
 
-Flow: clip-level 3-way merge (`merge_utils.perform_merge`, shared by CLI and panels; same-property conflicts are asked, never silently picked) → git records a two-parent merge commit → post-merge validation (validator.py) → if errors, send to LLM (ai_merge.py) → user confirms → commit fix-up.
+Flow: clip-level 3-way merge (`merge_utils.perform_merge`, shared by the CLI and Vit Studio; same-property conflicts are asked, never silently picked) → git records a two-parent merge commit → post-merge validation (validator.py) → if errors, send to LLM (ai_merge.py) → user confirms → commit fix-up.
 
-**AI in the GUI is enrichment-only.** The panel never blocks on AI — `analyze_branch_comparison` and `classify_commit_type` degrade to heuristic fallbacks if `GEMINI_API_KEY` is absent. AI conflict resolution (`merge_with_ai`) only runs in the CLI (`vit merge`); use `vit merge --no-ai` to skip it entirely. The GUI works 100% without a key.
+**The merge result never depends on AI.** Vit Studio uses no AI at all. In the CLI, AI is optional enrichment: a pre-merge summary and a post-merge fix-up for validation errors (`merge_with_ai`, confirmed by the user). Without `GEMINI_API_KEY` both are skipped; `vit merge --no-ai` skips them explicitly.
 
 ---
 
@@ -157,7 +156,7 @@ MARKERS: + Added marker at 00:01:05:00: "Fix audio sync here"
 
 ---
 
-## Resolve API Limitations
+## Resolve API Limitations (future NLE integration)
 
 **Reference:** `@docs/RESOLVE_API_LIMITATIONS.md`
 
@@ -177,12 +176,12 @@ Key points: Extended props (RotationAngle, Crop, Flip, etc.) are static only —
 
 ## Testing Strategy
 
-Serializer tests (mock Resolve), git wrapper tests, merge tests, validation tests, AI merge tests, diff formatter tests, roundtrip tests. Run: `python -m pytest tests/`
+Git wrapper tests, merge tests (incl. end-to-end `perform_merge` against real git in `test_merge_flow.py`), validation tests, AI merge tests, diff formatter tests, serializer/deserializer tests (mock Resolve). Run: `python -m pytest tests/`
 
 ---
 
 ## Scope Boundaries
 
-**In scope:** Resolve serializer/deserializer, full vit CLI, domain-split JSON, AI merge (Gemini), post-merge validation, human-readable diff, asset manifest, 5 Resolve plugin scripts.
+**In scope (MVP):** Vit Studio local browser editor (`demo/`), full vit CLI, domain-split JSON, clip-level merge, post-merge validation, human-readable diff, asset manifest, optional AI assistance (Gemini).
 
-**Out of scope:** Web UI, hosted platform, database, media storage/sync, conflict GUI, locking, real-time collab, other NLEs (fallback only), LUT versioning, auth.
+**Out of scope:** NLE plugins (Resolve plugin removed for the MVP), hosted platform, database, media storage/sync, locking, real-time collab, LUT versioning, auth.

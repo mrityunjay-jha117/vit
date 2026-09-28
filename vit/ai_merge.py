@@ -682,7 +682,8 @@ def analyze_branch_comparison(
         changes_b: Dict of changes in branch_b by category
 
     Returns:
-        Dict with summary, conflicts, recommendation, and explanation
+        Dict with summary, conflicts, recommendation, and explanation.
+        Heuristic fallbacks (no key, API error) also carry "ai_available": False.
     """
     try:
         model = _get_genai_model("You are a video editing merge advisor.")
@@ -693,6 +694,7 @@ def analyze_branch_comparison(
             "conflicts": [],
             "recommendation": "manual_review",
             "explanation": f"AI analysis unavailable: {e}",
+            "ai_available": False,
         }
 
     # Format changes for the prompt
@@ -729,6 +731,7 @@ def analyze_branch_comparison(
                 "conflicts": [],
                 "recommendation": "accept_b",
                 "explanation": f"Only {branch_b} has changes.",
+                "ai_available": False,
             }
         elif b_count == 0 and a_count > 0:
             return {
@@ -737,6 +740,7 @@ def analyze_branch_comparison(
                 "conflicts": [],
                 "recommendation": "accept_a",
                 "explanation": f"Only {branch_a} has changes.",
+                "ai_available": False,
             }
         else:
             return {
@@ -745,6 +749,7 @@ def analyze_branch_comparison(
                 "conflicts": ["Both branches have changes"],
                 "recommendation": "manual_review",
                 "explanation": f"Both branches have changes. Manual review recommended. (AI error: {e})",
+                "ai_available": False,
             }
 
 

@@ -14,7 +14,7 @@
 ## Merge Flow
 
 ```
-vit merge <branch>            (the Resolve panels use the same steps 1–3)
+vit merge <branch>            (Vit Studio uses the same steps 1–3)
     │
     ▼
 1. Clip-level 3-way merge (merge_utils.perform_merge)
@@ -24,7 +24,7 @@ vit merge <branch>            (the Resolve panels use the same steps 1–3)
     │
     ├─ Same property changed differently on both sides?
     │     → nothing is touched; CLI asks "keep ours / take theirs"
-    │       per conflict (panels point the user to the CLI)
+    │       per conflict (Vit Studio shows both values side by side)
     │
     ▼
 2. git merge --no-ff --no-commit, write merged JSON, pick binary

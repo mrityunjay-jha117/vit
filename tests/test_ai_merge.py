@@ -411,3 +411,11 @@ class TestIntegration:
         assert len(analysis.get_auto_resolved()) == 1
         assert analysis.get_questions()[0].domain == "color"
         assert len(analysis.get_questions()[0].options) == 2
+
+
+def test_branch_comparison_without_key_is_marked_unavailable(monkeypatch):
+    """The CLI must not ask 'Proceed?' on a heuristic that isn't an AI opinion."""
+    import vit.ai_merge as ai_merge
+    monkeypatch.setattr(ai_merge, "_load_api_key", lambda: None)
+    result = ai_merge.analyze_branch_comparison("main", "x", {"video": [{"id": "a"}]}, {"video": [{"id": "b"}]})
+    assert result["ai_available"] is False

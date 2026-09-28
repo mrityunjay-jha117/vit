@@ -68,7 +68,7 @@ def git_init(project_dir: str) -> None:
     os.makedirs(project_dir, exist_ok=True)
     _run(["init"], cwd=project_dir)
     # Start new repos on 'main', whatever the user's init.defaultBranch is —
-    # docs, clone instructions and the panel all assume it. Never move HEAD
+    # docs, clone instructions and the demo all assume it. Never move HEAD
     # in a repo that already has history (that would orphan existing work).
     has_commits = _run(["rev-parse", "--verify", "--quiet", "HEAD"], cwd=project_dir, check=False)
     if has_commits.returncode != 0:

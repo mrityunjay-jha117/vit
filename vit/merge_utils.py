@@ -436,7 +436,7 @@ def domain_file_map() -> Dict[str, str]:
     }
 
 
-# ── Merge orchestration (shared by the CLI, the Resolve panels and the demo) ──
+# ── Merge orchestration (shared by the CLI and Vit Studio) ──
 
 @dataclass
 class MergeOutcome:
