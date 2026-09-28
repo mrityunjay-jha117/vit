@@ -4,7 +4,7 @@
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
 <title>Vit Studio</title>
-<link rel="stylesheet" href="/style.css">
+<link rel="stylesheet" href="/css/style.css">
 </head>
 <body>
 <header class="topbar">
@@ -126,7 +126,20 @@
 
 <div class="toasts" id="toasts"></div>
 
-<script src="/sources.js"></script>
-<script src="/app.js"></script>
+<!-- Classic scripts sharing one global scope; order matters (main.js wires events and boots). -->
+<script src="/js/sources.js"></script>
+<script src="/js/core.js"></script>
+<script src="/js/model.js"></script>
+<script src="/js/sync.js"></script>
+<script src="/js/clip-ops.js"></script>
+<script src="/js/viewer.js"></script>
+<script src="/js/timeline.js"></script>
+<script src="/js/media-bin.js"></script>
+<script src="/js/inspector.js"></script>
+<script src="/js/version-control.js"></script>
+<script src="/js/modal.js"></script>
+<script src="/js/merge.js"></script>
+<script src="/js/json-view.js"></script>
+<script src="/js/main.js"></script>
 </body>
 </html>
